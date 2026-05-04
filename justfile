@@ -96,7 +96,7 @@ review-origin-main:
 	done
 	git checkout -B review-origin-main origin-main
 	git reset main
-	echo "Review changes on review-origin-main, then run: just --justfile ~/justfile finish-review"
+	echo "Review and commit changes on review-origin-main, then run: just --justfile ~/justfile done-review-origin-main"
 
 done-review-origin-main:
 	#!/usr/bin/env bash
@@ -107,13 +107,34 @@ done-review-origin-main:
 	  echo "Please clean the working tree."
 	  exit 1
 	fi
+	branch_name=$(git branch --show-current)
+	# Avoid finalizing from an unrelated branch by mistake.
+	if [[ "$branch_name" != "review-origin-main" && "$branch_name" != "origin-main" ]]; then
+	  echo "Error: Run this from review-origin-main or origin-main."
+	  exit 1
+	fi
 	if ! git show-ref --verify --quiet refs/heads/origin-main; then
 	  echo "Branch origin-main not found."
 	  exit 1
 	fi
 	backup_branch=backup-main-before-origin-main-$(date +%Y%m%d-%H%M%S)
 	git branch "$backup_branch" main
+	# If run before finish-review, apply the review branch to origin-main first.
+	if [[ "$branch_name" == "review-origin-main" ]]; then
+	  messages=$(git log --reverse --format=%B main..review-origin-main)
+	  git checkout origin-main
+	  git checkout review-origin-main . --no-overlay
+	  # Commit only when review changed the generated origin-main tree.
+	  if ! git diff --quiet --cached || ! git diff --quiet; then
+	    # Fallback when the review branch has no commits.
+	    if [[ -z "$messages" ]]; then
+	      messages="Apply review-origin-main changes"
+	    fi
+	    printf "%s\n" "$messages" | git commit --file -
+	  fi
+	fi
 	git branch -f main origin-main
 	git checkout main
-	git branch -d review-origin-main 2>/dev/null || true
-	git branch -d origin-main 2>/dev/null || true
+	# Drop temp branches after main points at reviewed origin-main.
+	git branch -D review-origin-main 2>/dev/null || true
+	git branch -D origin-main 2>/dev/null || true
