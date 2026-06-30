@@ -35,35 +35,48 @@ finish-review:
 	  exit 1
 	fi
 	review_branch_name=$(git branch --show-current)
-	if [[ ! $review_branch_name =~ ^review- ]]; then
+	# review-origin branches are based on their local source branch.
+	if [[ $review_branch_name =~ ^review-origin- ]]; then
+	  source_branch_name=${review_branch_name:14}
+	  base_branch_name=$source_branch_name
+	elif [[ $review_branch_name =~ ^review- ]]; then
+	  source_branch_name=${review_branch_name:7}
+	  base_branch_name=main
+	else
 	  echo "Error: Current branch is not a review branch. It should start with review-."
 	  exit 1
 	fi
-	source_branch_name=${review_branch_name:7}
-	messages=$(git log --reverse --format=%B main..$review_branch_name)
-	git checkout $source_branch_name
-	git checkout $review_branch_name . --no-overlay
+	messages=$(git log --reverse --format=%B "$base_branch_name..$review_branch_name")
+	git checkout "$source_branch_name"
+	git checkout "$review_branch_name" . --no-overlay
 	if git diff --quiet --cached && git diff --quiet; then
 	  echo "No review changes to apply."
-	  git branch -D $review_branch_name
+	  git branch -D "$review_branch_name"
 	  exit 0
 	fi
 	printf "%s\n" "$messages" | git commit --file -
-	git branch -D $review_branch_name
+	git branch -D "$review_branch_name"
 
 discard-review:
 	#!/usr/bin/env bash
 	set -euo pipefail
 	cd {{invocation_directory()}}
 	branch_name=$(git branch --show-current)
-	if [[ ! $branch_name =~ ^review- ]]; then
+	# review-origin should return to its source branch, not main.
+	if [[ $branch_name =~ ^review-origin- ]]; then
+	  checkout_branch_name=${branch_name:14}
+	elif [[ $branch_name =~ ^review- ]]; then
+	  checkout_branch_name=main
+	else
 	  echo "Error: Current branch is not a review branch. It should start with review-."
 	  exit 1
 	fi
 	git restore --staged .
 	git restore .
-	git checkout main
-	git branch -d $branch_name
+	# Remove added review files before leaving the review branch.
+	git clean -fd
+	git checkout "$checkout_branch_name"
+	git branch -D "$branch_name"
 
 start-new-python-project-here:
 	#!/usr/bin/env bash
@@ -77,64 +90,34 @@ start-new-python-project-here:
 	cp ~/Websites/django-cookiecutter/\{\{cookiecutter.project_slug\}\}/requirements/requirements.in ./
 	cp ~/Websites/django-cookiecutter/\{\{cookiecutter.project_slug\}\}/README.md ./
 
-review-origin-main:
+review-origin:
 	#!/usr/bin/env bash
 	set -euo pipefail
 	cd {{invocation_directory()}}
 	status=$(git status --porcelain)
 	if [[ -n "$status" ]]; then
 	  echo "Please clean the working tree."
+	  exit 1
+	fi
+	source_branch_name=$(git branch --show-current)
+	# This recipe needs a local branch to compare against origin.
+	if [[ -z "$source_branch_name" ]]; then
+	  echo "Error: Current checkout is not on a branch."
 	  exit 1
 	fi
 	git fetch origin
-	base=$(git merge-base main origin/main)
-	backup_branch=backup-main-$(date +%Y%m%d-%H%M%S)
-	git branch "$backup_branch" main
-	git checkout -B origin-main origin/main
-	for commit in $(git rev-list --reverse ${base}..main); do
-	  git cherry-pick "$commit"
-	done
-	git checkout -B review-origin-main origin-main
-	git reset main
-	echo "Review and commit changes on review-origin-main, then run: just --justfile ~/justfile done-review-origin-main"
+	origin_branch_name=origin/${source_branch_name}
+	if ! git show-ref --verify --quiet "refs/remotes/${origin_branch_name}"; then
+	  echo "Error: Remote branch ${origin_branch_name} not found."
+	  exit 1
+	fi
+	# Avoid showing local-only commits as removals in the review diff.
+	if ! git merge-base --is-ancestor "$source_branch_name" "$origin_branch_name"; then
+	  echo "Error: ${source_branch_name} is not an ancestor of ${origin_branch_name}."
+	  exit 1
+	fi
+	review_branch_name=review-origin-${source_branch_name}
+	git checkout -b "$review_branch_name" "$origin_branch_name"
+	git reset "$source_branch_name"
+	echo "Review and commit origin changes on ${review_branch_name}, then run: just --justfile ~/justfile finish-review"
 
-done-review-origin-main:
-	#!/usr/bin/env bash
-	set -euo pipefail
-	cd {{invocation_directory()}}
-	status=$(git status --porcelain)
-	if [[ -n "$status" ]]; then
-	  echo "Please clean the working tree."
-	  exit 1
-	fi
-	branch_name=$(git branch --show-current)
-	# Avoid finalizing from an unrelated branch by mistake.
-	if [[ "$branch_name" != "review-origin-main" && "$branch_name" != "origin-main" ]]; then
-	  echo "Error: Run this from review-origin-main or origin-main."
-	  exit 1
-	fi
-	if ! git show-ref --verify --quiet refs/heads/origin-main; then
-	  echo "Branch origin-main not found."
-	  exit 1
-	fi
-	backup_branch=backup-main-before-origin-main-$(date +%Y%m%d-%H%M%S)
-	git branch "$backup_branch" main
-	# If run before finish-review, apply the review branch to origin-main first.
-	if [[ "$branch_name" == "review-origin-main" ]]; then
-	  messages=$(git log --reverse --format=%B main..review-origin-main)
-	  git checkout origin-main
-	  git checkout review-origin-main . --no-overlay
-	  # Commit only when review changed the generated origin-main tree.
-	  if ! git diff --quiet --cached || ! git diff --quiet; then
-	    # Fallback when the review branch has no commits.
-	    if [[ -z "$messages" ]]; then
-	      messages="Apply review-origin-main changes"
-	    fi
-	    printf "%s\n" "$messages" | git commit --file -
-	  fi
-	fi
-	git branch -f main origin-main
-	git checkout main
-	# Drop temp branches after main points at reviewed origin-main.
-	git branch -D review-origin-main 2>/dev/null || true
-	git branch -D origin-main 2>/dev/null || true
