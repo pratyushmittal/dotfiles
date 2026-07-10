@@ -35,10 +35,13 @@ finish-review:
 	  exit 1
 	fi
 	review_branch_name=$(git branch --show-current)
-	# review-origin branches are based on their local source branch.
+	# review-origin preserves origin history, so source can fast-forward.
 	if [[ $review_branch_name =~ ^review-origin- ]]; then
 	  source_branch_name=${review_branch_name:14}
-	  base_branch_name=$source_branch_name
+	  git checkout "$source_branch_name"
+	  git merge --ff-only "$review_branch_name"
+	  git branch -D "$review_branch_name"
+	  exit 0
 	elif [[ $review_branch_name =~ ^review- ]]; then
 	  source_branch_name=${review_branch_name:7}
 	  base_branch_name=main
@@ -111,13 +114,14 @@ review-origin:
 	  echo "Error: Remote branch ${origin_branch_name} not found."
 	  exit 1
 	fi
-	# Avoid showing local-only commits as removals in the review diff.
-	if ! git merge-base --is-ancestor "$source_branch_name" "$origin_branch_name"; then
-	  echo "Error: ${source_branch_name} is not an ancestor of ${origin_branch_name}."
+	review_branch_name=review-origin-${source_branch_name}
+	git checkout -b "$review_branch_name" "$source_branch_name"
+	# --no-commit keeps MERGE_HEAD, so the review commit preserves origin history.
+	if ! git merge --no-commit --no-ff "$origin_branch_name"; then
+	  echo "Resolve conflicts on ${review_branch_name}, commit, then run: just --justfile ~/justfile finish-review"
 	  exit 1
 	fi
-	review_branch_name=review-origin-${source_branch_name}
-	git checkout -b "$review_branch_name" "$origin_branch_name"
-	git reset "$source_branch_name"
+	# Leave origin changes unstaged for review without aborting the merge.
+	git restore --staged .
 	echo "Review and commit origin changes on ${review_branch_name}, then run: just --justfile ~/justfile finish-review"
 
