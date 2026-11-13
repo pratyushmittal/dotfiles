@@ -124,4 +124,3 @@ review-origin:
 	# Leave origin changes unstaged for review without aborting the merge.
 	git restore --staged .
 	echo "Review and commit origin changes on ${review_branch_name}, then run: just --justfile ~/justfile finish-review"
-
